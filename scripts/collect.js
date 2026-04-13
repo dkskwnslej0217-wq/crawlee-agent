@@ -107,57 +107,47 @@ async function collectProductHunt(results) {
   }
 }
 
-// ── 1-2. 공식 사이트 방문 → 상세 설명 추출 ──────────────────
-async function visitProductPages(results) {
-  console.log('\n🔍 공식 사이트 방문 중...');
-  const phItems = results.filter(r => r.source === 'product_hunt' && r.url);
-  if (!phItems.length) return;
+// ── HN 외부 링크 방문 → 상세 설명 추출 ──────────────────────
+async function visitExternalPages(results) {
+  console.log('\n🔍 HN 외부 링크 방문 중...');
+  // HN 아이템 중 외부 URL 있는 것만 (hacker-news URL 제외)
+  const hnItems = results.filter(r =>
+    r.source === 'hackernews' &&
+    r.url &&
+    !r.url.includes('news.ycombinator.com')
+  );
+  if (!hnItems.length) { console.log('  ⏭️ 방문할 외부 링크 없음'); return; }
 
   const pageData = {};
 
   const crawler = new PlaywrightCrawler({
     headless: true,
-    maxRequestsPerCrawl: phItems.length,
+    maxRequestsPerCrawl: hnItems.length,
     requestHandlerTimeoutSecs: 20,
     maxConcurrency: 3,
     async requestHandler({ page, request }) {
-      // PH 제품 페이지에서 공식 사이트 링크 찾기
-      const externalLink = await page.$eval(
-        'a[href*="ref=producthunt"], a[data-test="visit-website"], a[href*="utm_source=producthunt"]',
-        el => el.href
-      ).catch(() => null);
+      const description = await page.$eval(
+        'meta[name="description"], meta[property="og:description"]',
+        el => el.getAttribute('content') || ''
+      ).catch(() => '');
 
-      const targetUrl = externalLink || request.url;
+      const fallback = description
+        ? ''
+        : await page.$eval('h1', el => el.innerText?.trim() || '').catch(() => '');
 
-      // 공식 사이트가 PH 외부라면 직접 가서 설명 추출
-      let description = '';
-      if (externalLink) {
-        try {
-          await page.goto(externalLink, { timeout: 15000, waitUntil: 'domcontentloaded' });
-          description = await page.$eval(
-            'meta[name="description"], meta[property="og:description"]',
-            el => el.content
-          ).catch(() => '');
-          if (!description) {
-            description = await page.$eval('h1, h2', el => el.innerText).catch(() => '');
-          }
-        } catch { /* 개별 사이트 실패 무시 */ }
-      }
-
-      pageData[request.url] = { externalUrl: targetUrl, description: description.slice(0, 400) };
+      pageData[request.url] = (description || fallback).slice(0, 400);
     },
   });
 
   try {
-    await crawler.run(phItems.map(r => r.url));
+    await crawler.run(hnItems.map(r => r.url));
 
     let enriched = 0;
     for (const item of results) {
-      if (item.source !== 'product_hunt') continue;
-      const data = pageData[item.url];
-      if (data?.description) {
-        item.description = data.description;
-        if (data.externalUrl !== item.url) item.url = data.externalUrl;
+      if (item.source !== 'hackernews') continue;
+      const desc = pageData[item.url];
+      if (desc) {
+        item.description = desc;
         enriched++;
       }
     }
@@ -265,9 +255,9 @@ const results = [];
 console.log(`\n🤖 crawlee-agent 시작 (${kstDate()} KST)`);
 
 await collectProductHunt(results);
-await visitProductPages(results);
 await collectReddit(results);
 await collectHN(results);
+await visitExternalPages(results);
 
 console.log(`\n📊 총 ${results.length}개 수집 완료`);
 
