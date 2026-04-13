@@ -1,0 +1,12 @@
+{
+  "name": "crawlee-agent",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "collect": "node scripts/collect.js"
+  },
+  "dependencies": {
+    "crawlee": "^3.13.0",
+    "playwright": "^1.52.0"
+  }
+}
