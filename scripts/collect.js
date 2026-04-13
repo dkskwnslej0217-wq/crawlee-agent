@@ -20,20 +20,26 @@ function kstDate() {
 
 // ── Supabase 저장 ──────────────────────────────────────────
 async function saveToSupabase(rows) {
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/trend_sources`, {
-    method: 'POST',
-    headers: {
-      apikey: SUPABASE_KEY,
-      Authorization: `Bearer ${SUPABASE_KEY}`,
-      'Content-Type': 'application/json',
-      Prefer: 'resolution=ignore-duplicates',
-    },
-    body: JSON.stringify(rows),
-  });
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`Supabase 저장 실패: ${err}`);
+  let saved = 0;
+  for (const row of rows) {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/trend_sources`, {
+      method: 'POST',
+      headers: {
+        apikey: SUPABASE_KEY,
+        Authorization: `Bearer ${SUPABASE_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(row),
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      const parsed = JSON.parse(err).code;
+      if (parsed === '23505') continue; // 중복 무시
+      throw new Error(`Supabase 저장 실패: ${err}`);
+    }
+    saved++;
   }
+  console.log(`  💾 ${saved}개 저장 (${rows.length - saved}개 중복 스킵)`);
 }
 
 // ── Groq로 핵심 요약 ───────────────────────────────────────
