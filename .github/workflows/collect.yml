@@ -1,9 +1,9 @@
-name: Crawlee Agent — AI 트렌드 수집
+name: Crawlee Agent
 
 on:
   schedule:
-    - cron: '50 22 * * *'   # 매일 07:50 KST (22:50 UTC) — nova-pipeline 08:00 전에 완료
-  workflow_dispatch:          # 수동 실행 가능
+    - cron: '50 22 * * *'
+  workflow_dispatch:
 
 jobs:
   collect:
@@ -13,19 +13,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Node.js 설정
+      - name: Node.js setup
         uses: actions/setup-node@v4
         with:
           node-version: '24'
           cache: 'npm'
 
-      - name: 의존성 설치
+      - name: Install dependencies
         run: npm install
 
-      - name: Playwright 브라우저 설치
+      - name: Install Playwright
         run: npx playwright install chromium --with-deps
 
-      - name: 트렌드 수집 실행
+      - name: Run collector
         env:
           SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
