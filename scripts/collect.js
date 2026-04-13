@@ -8,10 +8,30 @@
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
 const GROQ_KEY     = process.env.GROQ_API_KEY;
+const TG_TOKEN     = process.env.TELEGRAM_BOT_TOKEN;
+const TG_CHAT      = process.env.TELEGRAM_CHAT_ID;
 
 if (!SUPABASE_URL || !SUPABASE_KEY) {
   console.error('❌ SUPABASE_URL / SUPABASE_SERVICE_KEY 환경변수 없음');
   process.exit(1);
+}
+
+async function tg(msg) {
+  if (!TG_TOKEN || !TG_CHAT) return;
+  await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: TG_CHAT, text: msg }),
+  }).catch(() => {});
+}
+
+async function deleteOldTrendSources() {
+  const cutoff = new Date(Date.now() + 9 * 3600000 - 30 * 86400000).toISOString().slice(0, 10);
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/trend_sources?date=lt.${cutoff}`, {
+    method: 'DELETE',
+    headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` },
+  });
+  if (res.ok) console.log(`  🗑️ 30일 이전 데이터 삭제 완료 (기준: ${cutoff})`);
 }
 
 function kstDate() {
@@ -206,13 +226,15 @@ if (results.length > 0) {
   await saveToSupabase(results);
   console.log('✅ Supabase 저장 완료');
 
+  // 30일 이전 데이터 자동 삭제
+  await deleteOldTrendSources();
+
   // Groq 요약 (오늘 콘텐츠 소재 TOP3)
   const summary = await summarizeWithGroq(results);
   if (summary) {
     console.log('\n🧠 Groq 분석 결과:');
     console.log(summary);
 
-    // 요약도 저장
     await saveToSupabase([{
       date: kstDate(),
       source: 'groq_summary',
@@ -222,9 +244,18 @@ if (results.length > 0) {
       score: 999,
       comments_summary: null,
     }]);
+
+    // 텔레그램 완료 알림
+    const phCount = results.filter(r => r.source === 'product_hunt').length;
+    const rdCount = results.filter(r => r.source.startsWith('reddit')).length;
+    const hnCount = results.filter(r => r.source === 'hackernews').length;
+    await tg(`🤖 crawlee-agent 완료 (${kstDate()})\n📦 PH ${phCount}개 · Reddit ${rdCount}개 · HN ${hnCount}개\n\n🧠 TOP3:\n${summary}`);
+  } else {
+    await tg(`🤖 crawlee-agent 완료 (${kstDate()})\n📦 ${results.length}개 수집 (Groq 요약 없음)`);
   }
 } else {
   console.warn('⚠️ 수집된 데이터 없음');
+  await tg(`⚠️ crawlee-agent 수집 데이터 없음 (${kstDate()})`);
 }
 
 console.log('\n✅ crawlee-agent 완료');
