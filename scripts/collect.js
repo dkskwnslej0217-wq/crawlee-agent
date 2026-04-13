@@ -3,7 +3,7 @@
 // → Supabase trend_sources 테이블에 저장
 // → nova-pipeline이 읽어서 사용
 
-// crawlee는 HN 수집에서 필요 시 사용 (현재 fetch 기반으로 충분)
+import { PlaywrightCrawler } from 'crawlee';
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
@@ -82,40 +82,85 @@ async function summarizeWithGroq(items) {
   return data.choices?.[0]?.message?.content || null;
 }
 
-// ── 1. Product Hunt — RSS로 오늘 AI 툴 수집 ──────────────
+// ── 1. Product Hunt — Playwright로 실제 페이지 스크래핑 ──
 async function collectProductHunt(results) {
-  console.log('\n🚀 Product Hunt 수집 중...');
+  console.log('\n🚀 Product Hunt 수집 중 (Playwright)...');
+  const scraped = [];
+
+  const crawler = new PlaywrightCrawler({
+    headless: true,
+    maxRequestsPerCrawl: 1,
+    requestHandlerTimeoutSecs: 60,
+    async requestHandler({ page }) {
+      await page.waitForSelector('[data-test="post-item"]', { timeout: 30000 }).catch(() => {});
+
+      const items = await page.$$eval('[data-test="post-item"]', (els) =>
+        els.slice(0, 10).map(el => {
+          const title    = el.querySelector('h3, [class*="title"]')?.innerText?.trim() || '';
+          const tagline  = el.querySelector('p, [class*="tagline"], [class*="description"]')?.innerText?.trim() || '';
+          const url      = el.querySelector('a[href*="/posts/"]')?.href || '';
+          const voteText = el.querySelector('[class*="vote"], button[class*="Vote"]')?.innerText?.trim() || '0';
+          const score    = parseInt(voteText.replace(/[^0-9]/g, '')) || 0;
+          return { title, tagline, url, score };
+        })
+      );
+      scraped.push(...items);
+    },
+  });
+
   try {
-    // Product Hunt RSS (로그인 불필요, 안정적)
+    await crawler.run(['https://www.producthunt.com']);
+  } catch (e) {
+    console.warn(`  ⚠️ Playwright 실패 → RSS 폴백: ${e.message}`);
+    await collectProductHuntRSS(results);
+    return;
+  }
+
+  let count = 0;
+  for (const item of scraped) {
+    if (!item.title) continue;
+    results.push({
+      date: kstDate(),
+      source: 'product_hunt',
+      title: item.title,
+      description: item.tagline.slice(0, 500),
+      url: item.url,
+      score: item.score,
+      comments_summary: null,
+    });
+    count++;
+  }
+
+  if (count === 0) {
+    console.warn('  ⚠️ Playwright 결과 없음 → RSS 폴백');
+    await collectProductHuntRSS(results);
+    return;
+  }
+  console.log(`  ✅ Product Hunt ${count}개 (upvotes 포함)`);
+}
+
+// Product Hunt RSS 폴백
+async function collectProductHuntRSS(results) {
+  try {
     const res = await fetch('https://www.producthunt.com/feed', {
       headers: { 'User-Agent': 'Mozilla/5.0 (compatible; crawlee-agent/1.0)' },
     });
     if (!res.ok) throw new Error(`PH RSS ${res.status}`);
     const xml = await res.text();
-
-    // XML 파싱 (Atom 형식 - <entry> 태그)
     const items = [...xml.matchAll(/<entry>([\s\S]*?)<\/entry>/g)];
     let count = 0;
     for (const [, item] of items.slice(0, 10)) {
       const title = item.match(/<title[^>]*>([\s\S]*?)<\/title>/)?.[1]?.trim() || '';
       const content = item.match(/<content[^>]*>([\s\S]*?)<\/content>/)?.[1] || '';
-      const desc  = content.replace(/<[^>]+>/g, '').replace(/&[^;]+;/g, '').trim();
-      const link  = item.match(/<link[^>]*href="([^"]+)"/)?.[1] || '';
+      const desc = content.replace(/<[^>]+>/g, '').replace(/&[^;]+;/g, '').trim();
+      const link = item.match(/<link[^>]*href="([^"]+)"/)?.[1] || '';
       if (!title) continue;
-      results.push({
-        date: kstDate(),
-        source: 'product_hunt',
-        title: title.trim(),
-        description: desc.slice(0, 500),
-        url: link.trim(),
-        score: 0,
-        comments_summary: null,
-      });
+      results.push({ date: kstDate(), source: 'product_hunt', title, description: desc.slice(0, 500), url: link, score: 0, comments_summary: null });
       count++;
     }
-    console.log(`  ✅ Product Hunt ${count}개`);
+    console.log(`  ✅ Product Hunt RSS 폴백 ${count}개`);
   } catch (e) {
-    console.warn(`  ⚠️ Product Hunt 실패: ${e.message}`);
+    console.warn(`  ⚠️ Product Hunt RSS 폴백도 실패: ${e.message}`);
   }
 }
 
