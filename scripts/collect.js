@@ -73,21 +73,20 @@ async function collectProductHunt(results) {
     if (!res.ok) throw new Error(`PH RSS ${res.status}`);
     const xml = await res.text();
 
-    // XML 파싱 (정규식)
-    const items = [...xml.matchAll(/<item>([\s\S]*?)<\/item>/g)];
+    // XML 파싱 (Atom 형식 - <entry> 태그)
+    const items = [...xml.matchAll(/<entry>([\s\S]*?)<\/entry>/g)];
     let count = 0;
     for (const [, item] of items.slice(0, 10)) {
-      const title = item.match(/<title><!\[CDATA\[(.*?)\]\]><\/title>/)?.[1]
-                 || item.match(/<title>(.*?)<\/title>/)?.[1] || '';
-      const desc  = item.match(/<description><!\[CDATA\[(.*?)\]\]><\/description>/)?.[1]
-                 || item.match(/<description>(.*?)<\/description>/)?.[1] || '';
-      const link  = item.match(/<link>(.*?)<\/link>/)?.[1] || '';
+      const title = item.match(/<title[^>]*>([\s\S]*?)<\/title>/)?.[1]?.trim() || '';
+      const content = item.match(/<content[^>]*>([\s\S]*?)<\/content>/)?.[1] || '';
+      const desc  = content.replace(/<[^>]+>/g, '').replace(/&[^;]+;/g, '').trim();
+      const link  = item.match(/<link[^>]*href="([^"]+)"/)?.[1] || '';
       if (!title) continue;
       results.push({
         date: kstDate(),
         source: 'product_hunt',
         title: title.trim(),
-        description: desc.replace(/<[^>]+>/g, '').trim().slice(0, 500),
+        description: desc.slice(0, 500),
         url: link.trim(),
         score: 0,
         comments_summary: null,
