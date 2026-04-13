@@ -53,8 +53,8 @@ async function summarizeWithGroq(items) {
       model: 'llama-3.1-8b-instant',
       max_tokens: 400,
       messages: [
-        { role: 'system', content: '한국어로 답해. 아래 AI 트렌드 중 오늘 영상 콘텐츠로 가장 좋은 것 TOP3를 선정하고 이유를 한 줄씩 말해.' },
-        { role: 'user', content },
+        { role: 'system', content: 'You MUST respond ONLY in Korean (한국어). Do NOT use Chinese, Japanese, or any other language. KOREAN ONLY.' },
+        { role: 'user', content: `다음 AI 트렌드 중 오늘 영상 콘텐츠로 가장 좋은 것 TOP3를 선정하고 이유를 한 줄씩 한국어로 말해:\n\n${content}` },
       ],
     }),
   });
