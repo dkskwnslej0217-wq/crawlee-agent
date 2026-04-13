@@ -3,7 +3,7 @@
 // → Supabase trend_sources 테이블에 저장
 // → nova-pipeline이 읽어서 사용
 
-import { PlaywrightCrawler, Dataset } from 'crawlee';
+// crawlee는 HN 수집에서 필요 시 사용 (현재 fetch 기반으로 충분)
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
@@ -56,107 +56,77 @@ async function summarizeWithGroq(items) {
   return data.choices?.[0]?.message?.content || null;
 }
 
-// ── 1. Product Hunt — 오늘 AI 툴 TOP10 ───────────────────
+// ── 1. Product Hunt — RSS로 오늘 AI 툴 수집 ──────────────
 async function collectProductHunt(results) {
   console.log('\n🚀 Product Hunt 수집 중...');
-  const crawler = new PlaywrightCrawler({
-    headless: true,
-    maxRequestsPerCrawl: 3,
-    requestHandlerTimeoutSecs: 60,
-    async requestHandler({ page, log }) {
-      await page.waitForLoadState('networkidle');
+  try {
+    // Product Hunt RSS (로그인 불필요, 안정적)
+    const res = await fetch('https://www.producthunt.com/feed?category=artificial-intelligence', {
+      headers: { 'User-Agent': 'crawlee-agent/1.0' },
+    });
+    if (!res.ok) throw new Error(`PH RSS ${res.status}`);
+    const xml = await res.text();
 
-      const products = await page.evaluate(() => {
-        const items = [];
-        document.querySelectorAll('[data-test="product-item"]').forEach(el => {
-          const title = el.querySelector('strong')?.innerText?.trim();
-          const desc  = el.querySelector('p')?.innerText?.trim();
-          const votes = el.querySelector('[data-test="vote-button"]')?.innerText?.trim();
-          const link  = el.querySelector('a')?.href;
-          if (title) items.push({ title, desc, votes, link });
-        });
-        return items.slice(0, 10);
+    // XML 파싱 (정규식)
+    const items = [...xml.matchAll(/<item>([\s\S]*?)<\/item>/g)];
+    let count = 0;
+    for (const [, item] of items.slice(0, 10)) {
+      const title = item.match(/<title><!\[CDATA\[(.*?)\]\]><\/title>/)?.[1]
+                 || item.match(/<title>(.*?)<\/title>/)?.[1] || '';
+      const desc  = item.match(/<description><!\[CDATA\[(.*?)\]\]><\/description>/)?.[1]
+                 || item.match(/<description>(.*?)<\/description>/)?.[1] || '';
+      const link  = item.match(/<link>(.*?)<\/link>/)?.[1] || '';
+      if (!title) continue;
+      results.push({
+        date: kstDate(),
+        source: 'product_hunt',
+        title: title.trim(),
+        description: desc.replace(/<[^>]+>/g, '').trim().slice(0, 500),
+        url: link.trim(),
+        score: 0,
+        comments_summary: null,
       });
-
-      if (products.length === 0) {
-        // fallback: 구조가 바뀐 경우 텍스트 기반 추출
-        const text = await page.evaluate(() => document.body.innerText);
-        log.warning('Product Hunt 구조 변경 — 텍스트 추출로 폴백');
-        results.push({
-          date: kstDate(),
-          source: 'product_hunt',
-          title: 'Product Hunt 수집 실패 (구조 변경)',
-          description: text.slice(0, 500),
-          url: 'https://www.producthunt.com',
-          score: 0,
-          comments_summary: null,
-        });
-        return;
-      }
-
-      log.info(`Product Hunt ${products.length}개 수집`);
-      for (const p of products) {
-        results.push({
-          date: kstDate(),
-          source: 'product_hunt',
-          title: p.title,
-          description: p.desc || '',
-          url: p.link || 'https://www.producthunt.com',
-          score: parseInt(p.votes?.replace(/\D/g, '') || '0'),
-          comments_summary: null,
-        });
-      }
-    },
-  });
-
-  await crawler.run(['https://www.producthunt.com/topics/artificial-intelligence']);
+      count++;
+    }
+    console.log(`  ✅ Product Hunt ${count}개`);
+  } catch (e) {
+    console.warn(`  ⚠️ Product Hunt 실패: ${e.message}`);
+  }
 }
 
-// ── 2. Reddit — r/MachineLearning + r/artificial TOP5 본문+댓글 ──
+// ── 2. Reddit — RSS로 수집 (JSON API는 GitHub Actions IP 차단)
 async function collectReddit(results) {
   console.log('\n💬 Reddit 수집 중...');
-  const subreddits = ['MachineLearning', 'artificial'];
+  const subreddits = ['MachineLearning', 'artificial', 'ChatGPT'];
 
   for (const sub of subreddits) {
     try {
-      // Reddit JSON API (로그인 불필요)
-      const res = await fetch(`https://www.reddit.com/r/${sub}/hot.json?limit=5`, {
-        headers: { 'User-Agent': 'crawlee-agent/1.0' },
+      const res = await fetch(`https://www.reddit.com/r/${sub}/hot.rss?limit=5`, {
+        headers: { 'User-Agent': 'crawlee-agent/1.0 (by /u/nova_pipeline)' },
       });
-      if (!res.ok) continue;
-      const data = await res.json();
-      const posts = data?.data?.children || [];
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const xml = await res.text();
 
-      for (const post of posts) {
-        const p = post.data;
-        if (p.stickied) continue;
-
-        // 댓글 수집
-        let commentsSummary = '';
-        try {
-          const cRes = await fetch(`https://www.reddit.com/r/${sub}/comments/${p.id}.json?limit=5`, {
-            headers: { 'User-Agent': 'crawlee-agent/1.0' },
-          });
-          const cData = await cRes.json();
-          const comments = cData?.[1]?.data?.children || [];
-          commentsSummary = comments
-            .filter(c => c.data?.body && c.data.body !== '[deleted]')
-            .slice(0, 3)
-            .map(c => c.data.body.slice(0, 150))
-            .join(' | ');
-        } catch { /* 댓글 실패는 무시 */ }
-
+      const items = [...xml.matchAll(/<entry>([\s\S]*?)<\/entry>/g)];
+      let count = 0;
+      for (const [, item] of items.slice(0, 5)) {
+        const title   = item.match(/<title[^>]*>(.*?)<\/title>/)?.[1]?.replace(/&amp;/g, '&') || '';
+        const link    = item.match(/<link[^>]*href="([^"]+)"/)?.[1] || '';
+        const content = item.match(/<content[^>]*>([\s\S]*?)<\/content>/)?.[1] || '';
+        const desc    = content.replace(/<[^>]+>/g, '').replace(/&[^;]+;/g, '').trim().slice(0, 400);
+        if (!title) continue;
         results.push({
           date: kstDate(),
           source: `reddit_${sub.toLowerCase()}`,
-          title: p.title,
-          description: (p.selftext || p.url || '').slice(0, 500),
-          url: `https://www.reddit.com${p.permalink}`,
-          score: p.score,
-          comments_summary: commentsSummary.slice(0, 800),
+          title: title.trim(),
+          description: desc,
+          url: link,
+          score: 0,
+          comments_summary: null,
         });
+        count++;
       }
-      console.log(`  ✅ r/${sub} ${posts.length}개`);
+      console.log(`  ✅ r/${sub} ${count}개`);
     } catch (e) {
       console.warn(`  ⚠️ r/${sub} 실패: ${e.message}`);
     }
