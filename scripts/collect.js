@@ -26,7 +26,7 @@ async function saveToSupabase(rows) {
       apikey: SUPABASE_KEY,
       Authorization: `Bearer ${SUPABASE_KEY}`,
       'Content-Type': 'application/json',
-      Prefer: 'resolution=merge-duplicates',
+      Prefer: 'resolution=ignore-duplicates',
     },
     body: JSON.stringify(rows),
   });
@@ -61,8 +61,8 @@ async function collectProductHunt(results) {
   console.log('\n🚀 Product Hunt 수집 중...');
   try {
     // Product Hunt RSS (로그인 불필요, 안정적)
-    const res = await fetch('https://www.producthunt.com/feed?category=artificial-intelligence', {
-      headers: { 'User-Agent': 'crawlee-agent/1.0' },
+    const res = await fetch('https://www.producthunt.com/feed', {
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; crawlee-agent/1.0)' },
     });
     if (!res.ok) throw new Error(`PH RSS ${res.status}`);
     const xml = await res.text();
