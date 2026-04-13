@@ -2,7 +2,7 @@
 // Crawlee PlaywrightCrawler → Product Hunt / Reddit / HN 본문+댓글까지 수집
 // → Supabase trend_sources 테이블에 저장
 // → nova-pipeline이 읽어서 사용
-
+import { PlaywrightCrawler } from 'crawlee';
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
@@ -107,6 +107,66 @@ async function collectProductHunt(results) {
   }
 }
 
+// ── 1-2. 공식 사이트 방문 → 상세 설명 추출 ──────────────────
+async function visitProductPages(results) {
+  console.log('\n🔍 공식 사이트 방문 중...');
+  const phItems = results.filter(r => r.source === 'product_hunt' && r.url);
+  if (!phItems.length) return;
+
+  const pageData = {};
+
+  const crawler = new PlaywrightCrawler({
+    headless: true,
+    maxRequestsPerCrawl: phItems.length,
+    requestHandlerTimeoutSecs: 20,
+    maxConcurrency: 3,
+    async requestHandler({ page, request }) {
+      // PH 제품 페이지에서 공식 사이트 링크 찾기
+      const externalLink = await page.$eval(
+        'a[href*="ref=producthunt"], a[data-test="visit-website"], a[href*="utm_source=producthunt"]',
+        el => el.href
+      ).catch(() => null);
+
+      const targetUrl = externalLink || request.url;
+
+      // 공식 사이트가 PH 외부라면 직접 가서 설명 추출
+      let description = '';
+      if (externalLink) {
+        try {
+          await page.goto(externalLink, { timeout: 15000, waitUntil: 'domcontentloaded' });
+          description = await page.$eval(
+            'meta[name="description"], meta[property="og:description"]',
+            el => el.content
+          ).catch(() => '');
+          if (!description) {
+            description = await page.$eval('h1, h2', el => el.innerText).catch(() => '');
+          }
+        } catch { /* 개별 사이트 실패 무시 */ }
+      }
+
+      pageData[request.url] = { externalUrl: targetUrl, description: description.slice(0, 400) };
+    },
+  });
+
+  try {
+    await crawler.run(phItems.map(r => r.url));
+
+    let enriched = 0;
+    for (const item of results) {
+      if (item.source !== 'product_hunt') continue;
+      const data = pageData[item.url];
+      if (data?.description) {
+        item.description = data.description;
+        if (data.externalUrl !== item.url) item.url = data.externalUrl;
+        enriched++;
+      }
+    }
+    console.log(`  ✅ ${enriched}개 상세 설명 추출 완료`);
+  } catch (e) {
+    console.warn(`  ⚠️ 공식 사이트 방문 실패: ${e.message}`);
+  }
+}
+
 // ── 2. Reddit — RSS로 수집 (JSON API는 GitHub Actions IP 차단)
 async function collectReddit(results) {
   console.log('\n💬 Reddit 수집 중...');
@@ -205,6 +265,7 @@ const results = [];
 console.log(`\n🤖 crawlee-agent 시작 (${kstDate()} KST)`);
 
 await collectProductHunt(results);
+await visitProductPages(results);
 await collectReddit(results);
 await collectHN(results);
 
