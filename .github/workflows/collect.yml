@@ -2,7 +2,7 @@ name: Crawlee Agent
 
 on:
   schedule:
-    - cron: '50 22 * * *'
+    - cron: '0 22 * * *'
   workflow_dispatch:
 
 jobs:
