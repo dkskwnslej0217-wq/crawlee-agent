@@ -52,8 +52,9 @@ async function saveToSupabase(rows) {
     });
     if (!res.ok) {
       const err = await res.text();
-      const parsed = JSON.parse(err).code;
-      if (parsed === '23505') continue; // 중복 무시
+      let errCode = null;
+      try { errCode = JSON.parse(err).code; } catch { /* 비JSON 응답 무시 */ }
+      if (errCode === '23505') continue; // 중복 무시
       throw new Error(`Supabase 저장 실패: ${err}`);
     }
     saved++;
