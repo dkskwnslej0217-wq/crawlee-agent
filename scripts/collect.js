@@ -250,6 +250,94 @@ async function collectHN(results) {
   }
 }
 
+// ── GitHub Trending 수집 ──────────────────────────────────
+async function collectGitHubTrending(results) {
+  try {
+    const res = await fetch('https://api.github.com/search/repositories?q=stars:>100+pushed:>2026-01-01+topic:ai&sort=stars&order=desc&per_page=5', {
+      headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'crawlee-agent' },
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    for (const repo of (data.items || [])) {
+      results.push({
+        date: kstDate(),
+        source: 'github_trending',
+        title: repo.full_name,
+        description: (repo.description || '').slice(0, 500),
+        url: repo.html_url,
+        score: repo.stargazers_count,
+        comments_summary: null,
+      });
+    }
+    console.log(`  ✅ GitHub Trending ${results.filter(r => r.source === 'github_trending').length}개`);
+  } catch (e) {
+    console.warn(`  ⚠️ GitHub Trending 실패: ${e.message}`);
+  }
+}
+
+// ── Google Trends 수집 (RSS) ──────────────────────────────
+async function collectGoogleTrends(results) {
+  try {
+    const res = await fetch('https://trends.google.com/trending/rss?geo=KR', {
+      headers: { 'User-Agent': 'Mozilla/5.0' },
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const xml = await res.text();
+    const items = xml.match(/<item>([\s\S]*?)<\/item>/g) || [];
+    let count = 0;
+    for (const item of items.slice(0, 5)) {
+      const title = (item.match(/<title>(.*?)<\/title>/) || [])[1] || '';
+      const url   = (item.match(/<link>(.*?)<\/link>/)   || [])[1] || '';
+      if (!title) continue;
+      results.push({
+        date: kstDate(),
+        source: 'google_trends_kr',
+        title: title.replace(/<!\[CDATA\[|\]\]>/g, '').trim(),
+        description: '',
+        url,
+        score: 0,
+        comments_summary: null,
+      });
+      count++;
+    }
+    console.log(`  ✅ Google Trends KR ${count}개`);
+  } catch (e) {
+    console.warn(`  ⚠️ Google Trends 실패: ${e.message}`);
+  }
+}
+
+// ── YouTube 트렌딩 수집 (RSS) ─────────────────────────────
+async function collectYouTubeTrending(results) {
+  try {
+    // YouTube 트렌딩 RSS (한국)
+    const res = await fetch('https://www.youtube.com/feeds/videos.xml?q=AI+tool+2026&gl=KR&hl=ko', {
+      headers: { 'User-Agent': 'Mozilla/5.0' },
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const xml = await res.text();
+    const entries = xml.match(/<entry>([\s\S]*?)<\/entry>/g) || [];
+    let count = 0;
+    for (const entry of entries.slice(0, 5)) {
+      const title = (entry.match(/<title>(.*?)<\/title>/) || [])[1] || '';
+      const url   = (entry.match(/href="(https:\/\/www\.youtube\.com[^"]+)"/) || [])[1] || '';
+      if (!title) continue;
+      results.push({
+        date: kstDate(),
+        source: 'youtube_trending',
+        title: title.replace(/<!\[CDATA\[|\]\]>/g, '').trim(),
+        description: '',
+        url,
+        score: 0,
+        comments_summary: null,
+      });
+      count++;
+    }
+    console.log(`  ✅ YouTube Trending ${count}개`);
+  } catch (e) {
+    console.warn(`  ⚠️ YouTube Trending 실패: ${e.message}`);
+  }
+}
+
 // ── 메인 ──────────────────────────────────────────────────
 const results = [];
 
@@ -259,6 +347,9 @@ await collectProductHunt(results);
 await collectReddit(results);
 await collectHN(results);
 await visitExternalPages(results);
+await collectGitHubTrending(results);
+await collectGoogleTrends(results);
+await collectYouTubeTrending(results);
 
 console.log(`\n📊 총 ${results.length}개 수집 완료`);
 
@@ -289,7 +380,10 @@ if (results.length > 0) {
     const phCount = results.filter(r => r.source === 'product_hunt').length;
     const rdCount = results.filter(r => r.source.startsWith('reddit')).length;
     const hnCount = results.filter(r => r.source === 'hackernews').length;
-    await tg(`🤖 crawlee-agent 완료 (${kstDate()})\n📦 PH ${phCount}개 · Reddit ${rdCount}개 · HN ${hnCount}개\n\n🧠 TOP3:\n${summary}`);
+    const ghCount = results.filter(r => r.source === 'github_trending').length;
+    const gtCount = results.filter(r => r.source === 'google_trends_kr').length;
+    const ytCount = results.filter(r => r.source === 'youtube_trending').length;
+    await tg(`🤖 crawlee-agent 완료 (${kstDate()})\n📦 PH ${phCount}개 · Reddit ${rdCount}개 · HN ${hnCount}개 · GH ${ghCount}개 · GT ${gtCount}개 · YT ${ytCount}개\n\n🧠 TOP3:\n${summary}`);
   } else {
     await tg(`🤖 crawlee-agent 완료 (${kstDate()})\n📦 ${results.length}개 수집 (Groq 요약 없음)`);
   }
