@@ -25,12 +25,12 @@ async function tg(msg) {
 }
 
 async function deleteOldTrendSources() {
-  const cutoff = new Date(Date.now() + 9 * 3600000 - 30 * 86400000).toISOString().slice(0, 10);
+  const cutoff = new Date(Date.now() + 9 * 3600000 - 180 * 86400000).toISOString().slice(0, 10);
   const res = await fetch(`${SUPABASE_URL}/rest/v1/trend_sources?date=lt.${cutoff}`, {
     method: 'DELETE',
     headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` },
   });
-  if (res.ok) console.log(`  🗑️ 30일 이전 데이터 삭제 완료 (기준: ${cutoff})`);
+  if (res.ok) console.log(`  🗑️ 180일 이전 데이터 삭제 완료 (기준: ${cutoff})`);
 }
 
 function kstDate() {
