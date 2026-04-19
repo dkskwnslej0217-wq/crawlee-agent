@@ -35,3 +35,15 @@ jobs:
           TELEGRAM_BOT_TOKEN:   ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:     ${{ secrets.TELEGRAM_CHAT_ID }}
         run: node scripts/collect.js
+
+      - name: 실패 시 debug-agent 트리거
+        if: failure()
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          curl -s -X POST \
+            -H "Authorization: token $GH_PAT" \
+            -H "Accept: application/vnd.github.v3+json" \
+            -H "Content-Type: application/json" \
+            https://api.github.com/repos/dkskwnslej0217-wq/debug-agent/dispatches \
+            -d "{\"event_type\":\"pipeline-failure\",\"client_payload\":{\"repo\":\"crawlee-agent\",\"run_id\":\"${{ github.run_id }}\",\"workflow\":\"Crawlee Agent\"}}"
