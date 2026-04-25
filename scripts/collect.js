@@ -371,6 +371,40 @@ async function collectHuggingFace(results) {
   }
 }
 
+// ── Yahoo Finance 미국 주식 뉴스 수집 ───────────────────────
+async function collectYahooFinance(results) {
+  console.log('\n📈 Yahoo Finance 수집 중...');
+  try {
+    const res = await fetch('https://finance.yahoo.com/news/rssindex', {
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; crawlee-agent/1.0)' },
+    });
+    if (!res.ok) throw new Error(`YF RSS ${res.status}`);
+    const xml = await res.text();
+    const items = [...xml.matchAll(/<item>([\s\S]*?)<\/item>/g)];
+    let count = 0;
+    for (const [, item] of items.slice(0, 10)) {
+      const title = item.match(/<title[^>]*><!\[CDATA\[(.*?)\]\]>/)?.[1] || item.match(/<title>(.*?)<\/title>/)?.[1] || '';
+      const link = item.match(/<link>(.*?)<\/link>/)?.[1] || '';
+      const desc = item.match(/<description[^>]*><!\[CDATA\[(.*?)\]\]>/)?.[1]?.replace(/<[^>]+>/g, '').trim() || '';
+      const imageUrl = item.match(/<media:thumbnail[^>]*url="([^"]+)"/)?.[1] || '';
+      if (!title) continue;
+      results.push({
+        date: kstDate(),
+        source: 'yahoo_finance',
+        title: title.trim(),
+        description: desc.slice(0, 500),
+        url: link,
+        score: 0,
+        comments_summary: imageUrl || null,
+      });
+      count++;
+    }
+    console.log(`  ✅ Yahoo Finance ${count}개`);
+  } catch (e) {
+    console.warn(`  ⚠️ Yahoo Finance 실패: ${e.message}`);
+  }
+}
+
 // ── 메인 ──────────────────────────────────────────────────
 const results = [];
 
@@ -384,6 +418,7 @@ await collectGitHubTrending(results);
 await collectGoogleTrends(results);
 await collectYouTubeTrending(results);
 await collectHuggingFace(results);
+await collectYahooFinance(results);
 
 console.log(`\n📊 총 ${results.length}개 수집 완료`);
 
@@ -418,7 +453,8 @@ if (results.length > 0) {
     const gtCount = results.filter(r => r.source === 'google_trends_kr').length;
     const ytCount = results.filter(r => r.source === 'youtube_trending').length;
     const hfCount = results.filter(r => r.source === 'huggingface_trending').length;
-    await tg(`🤖 crawlee-agent 완료 (${kstDate()})\n📦 PH ${phCount}개 · Reddit ${rdCount}개 · HN ${hnCount}개 · GH ${ghCount}개 · GT ${gtCount}개 · YT ${ytCount}개 · HF ${hfCount}개\n\n🧠 TOP3:\n${summary}`);
+    const yfCount = results.filter(r => r.source === 'yahoo_finance').length;
+    await tg(`🤖 crawlee-agent 완료 (${kstDate()})\n📦 PH ${phCount}개 · Reddit ${rdCount}개 · HN ${hnCount}개 · GH ${ghCount}개 · GT ${gtCount}개 · YT ${ytCount}개 · HF ${hfCount}개 · YF ${yfCount}개\n\n🧠 TOP3:\n${summary}`);
   } else {
     await tg(`🤖 crawlee-agent 완료 (${kstDate()})\n📦 ${results.length}개 수집 (Groq 요약 없음)`);
   }
