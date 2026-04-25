@@ -3,6 +3,7 @@
 // → Supabase trend_sources 테이블에 저장
 // → nova-pipeline이 읽어서 사용
 import { PlaywrightCrawler } from 'crawlee';
+import { checkAndCount } from './api-limiter.js';
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
@@ -65,6 +66,7 @@ async function saveToSupabase(rows) {
 // ── Groq로 핵심 요약 ───────────────────────────────────────
 async function summarizeWithGroq(items) {
   if (!GROQ_KEY || items.length === 0) return null;
+  if (!(await checkAndCount('groq_8b'))) return null;
   const content = items.map(i => `[${i.source}] ${i.title}: ${i.description?.slice(0, 200)}`).join('\n');
   const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
     method: 'POST',
