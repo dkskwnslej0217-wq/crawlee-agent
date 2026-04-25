@@ -161,7 +161,7 @@ async function visitExternalPages(results) {
 // ── 2. Reddit — RSS로 수집 (JSON API는 GitHub Actions IP 차단)
 async function collectReddit(results) {
   console.log('\n💬 Reddit 수집 중...');
-  const subreddits = ['MachineLearning', 'artificial', 'ChatGPT'];
+  const subreddits = ['MachineLearning', 'artificial', 'ChatGPT', 'LocalLLaMA', 'singularity'];
 
   for (const sub of subreddits) {
     try {
@@ -338,6 +338,37 @@ async function collectYouTubeTrending(results) {
   }
 }
 
+// ── HuggingFace 트렌딩 모델 수집 ─────────────────────────
+async function collectHuggingFace(results) {
+  try {
+    const res = await fetch('https://huggingface.co/api/models?sort=trending&limit=10&direction=-1', {
+      headers: { 'User-Agent': 'crawlee-agent/1.0' },
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    let count = 0;
+    for (const model of data) {
+      const title = model.id || '';
+      const desc = (model.cardData?.language ? `언어: ${model.cardData.language.join(',')} | ` : '')
+        + (model.pipeline_tag ? `태스크: ${model.pipeline_tag}` : '');
+      if (!title) continue;
+      results.push({
+        date: kstDate(),
+        source: 'huggingface_trending',
+        title,
+        description: desc.slice(0, 300),
+        url: `https://huggingface.co/${title}`,
+        score: model.downloads || 0,
+        comments_summary: null,
+      });
+      count++;
+    }
+    console.log(`  ✅ HuggingFace Trending ${count}개`);
+  } catch (e) {
+    console.warn(`  ⚠️ HuggingFace 실패: ${e.message}`);
+  }
+}
+
 // ── 메인 ──────────────────────────────────────────────────
 const results = [];
 
@@ -350,6 +381,7 @@ await visitExternalPages(results);
 await collectGitHubTrending(results);
 await collectGoogleTrends(results);
 await collectYouTubeTrending(results);
+await collectHuggingFace(results);
 
 console.log(`\n📊 총 ${results.length}개 수집 완료`);
 
@@ -383,7 +415,8 @@ if (results.length > 0) {
     const ghCount = results.filter(r => r.source === 'github_trending').length;
     const gtCount = results.filter(r => r.source === 'google_trends_kr').length;
     const ytCount = results.filter(r => r.source === 'youtube_trending').length;
-    await tg(`🤖 crawlee-agent 완료 (${kstDate()})\n📦 PH ${phCount}개 · Reddit ${rdCount}개 · HN ${hnCount}개 · GH ${ghCount}개 · GT ${gtCount}개 · YT ${ytCount}개\n\n🧠 TOP3:\n${summary}`);
+    const hfCount = results.filter(r => r.source === 'huggingface_trending').length;
+    await tg(`🤖 crawlee-agent 완료 (${kstDate()})\n📦 PH ${phCount}개 · Reddit ${rdCount}개 · HN ${hnCount}개 · GH ${ghCount}개 · GT ${gtCount}개 · YT ${ytCount}개 · HF ${hfCount}개\n\n🧠 TOP3:\n${summary}`);
   } else {
     await tg(`🤖 crawlee-agent 완료 (${kstDate()})\n📦 ${results.length}개 수집 (Groq 요약 없음)`);
   }
