@@ -385,8 +385,10 @@ async function collectYahooFinance(results) {
     for (const [, item] of items.slice(0, 10)) {
       const title = item.match(/<title[^>]*><!\[CDATA\[(.*?)\]\]>/)?.[1] || item.match(/<title>(.*?)<\/title>/)?.[1] || '';
       const link = item.match(/<link>(.*?)<\/link>/)?.[1] || '';
-      const desc = item.match(/<description[^>]*><!\[CDATA\[(.*?)\]\]>/)?.[1]?.replace(/<[^>]+>/g, '').trim() || '';
-      const imageUrl = item.match(/<media:thumbnail[^>]*url="([^"]+)"/)?.[1] || '';
+      const source = item.match(/<source[^>]*>(.*?)<\/source>/)?.[1] || '';
+      const pubDate = item.match(/<pubDate>(.*?)<\/pubDate>/)?.[1] || '';
+      const desc = source ? `${source} · ${pubDate.slice(0, 10)}` : pubDate.slice(0, 10);
+      const imageUrl = item.match(/<media:content[^>]*url="([^"]+)"/)?.[1] || item.match(/<media:thumbnail[^>]*url="([^"]+)"/)?.[1] || '';
       if (!title) continue;
       results.push({
         date: kstDate(),
