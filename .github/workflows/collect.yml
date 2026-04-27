@@ -2,14 +2,21 @@ name: Crawlee Agent
 
 on:
   schedule:
-    - cron: '0 22 * * *'
+    - cron: '0 22 * * *'   # 07:00 KST — 미국/AI 전체 수집
+    - cron: '0 7 * * *'    # 16:00 KST — 한국 주식 수집
   workflow_dispatch:
+    inputs:
+      mode:
+        description: 'COLLECT_MODE (비워두면 전체, korean=한국주식만)'
+        required: false
+        default: ''
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  collect:
+  collect-full:
+    if: (github.event_name == 'schedule' && github.event.schedule == '0 22 * * *') || (github.event_name == 'workflow_dispatch' && inputs.mode != 'korean')
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -27,7 +34,7 @@ jobs:
       - name: Install Playwright
         run: npx playwright install chromium --with-deps
 
-      - name: Run collector
+      - name: 전체 수집 실행
         env:
           SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
@@ -46,4 +53,41 @@ jobs:
             -H "Accept: application/vnd.github.v3+json" \
             -H "Content-Type: application/json" \
             https://api.github.com/repos/dkskwnslej0217-wq/debug-agent/dispatches \
-            -d "{\"event_type\":\"pipeline-failure\",\"client_payload\":{\"repo\":\"crawlee-agent\",\"run_id\":\"${{ github.run_id }}\",\"workflow\":\"Crawlee Agent\"}}"
+            -d "{\"event_type\":\"pipeline-failure\",\"client_payload\":{\"repo\":\"crawlee-agent\",\"run_id\":\"${{ github.run_id }}\",\"workflow\":\"collect-full\"}}"
+
+  collect-korean:
+    if: (github.event_name == 'schedule' && github.event.schedule == '0 7 * * *') || (github.event_name == 'workflow_dispatch' && inputs.mode == 'korean')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Node.js setup
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: 한국 주식 수집 실행
+        env:
+          SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          TELEGRAM_BOT_TOKEN:   ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:     ${{ secrets.TELEGRAM_CHAT_ID }}
+          COLLECT_MODE:         korean
+        run: node scripts/collect.js
+
+      - name: 실패 시 debug-agent 트리거
+        if: failure()
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          curl -s -X POST \
+            -H "Authorization: token $GH_PAT" \
+            -H "Accept: application/vnd.github.v3+json" \
+            -H "Content-Type: application/json" \
+            https://api.github.com/repos/dkskwnslej0217-wq/debug-agent/dispatches \
+            -d "{\"event_type\":\"pipeline-failure\",\"client_payload\":{\"repo\":\"crawlee-agent\",\"run_id\":\"${{ github.run_id }}\",\"workflow\":\"collect-korean\"}}"

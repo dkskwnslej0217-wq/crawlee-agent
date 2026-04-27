@@ -407,20 +407,69 @@ async function collectYahooFinance(results) {
   }
 }
 
+// ── 한국 주식/금융 뉴스 수집 ─────────────────────────────
+async function collectKoreanFinance(results) {
+  console.log('\n🇰🇷 한국 주식 뉴스 수집 중...');
+  const feeds = [
+    { url: 'https://www.hankyung.com/feed/finance', name: '한국경제' },
+    { url: 'https://www.mk.co.kr/rss/40300001/', name: '매일경제' },
+    { url: 'https://www.yna.co.kr/rss/economy.xml', name: '연합뉴스' },
+  ];
+  let total = 0;
+  for (const feed of feeds) {
+    try {
+      const res = await fetch(feed.url, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; crawlee-agent/1.0)' },
+      });
+      if (!res.ok) { console.warn(`  ⚠️ ${feed.name} ${res.status}`); continue; }
+      const xml = await res.text();
+      const items = [...xml.matchAll(/<item>([\s\S]*?)<\/item>/g)];
+      let count = 0;
+      for (const [, item] of items.slice(0, 8)) {
+        const title = item.match(/<title[^>]*><!\[CDATA\[(.*?)\]\]>/)?.[1] || item.match(/<title>(.*?)<\/title>/)?.[1] || '';
+        const link = item.match(/<link>(.*?)<\/link>/)?.[1] || item.match(/<link\s*\/?>(.*?)<\/link>/)?.[1] || '';
+        const desc = item.match(/<description[^>]*><!\[CDATA\[(.*?)\]\]>/s)?.[1] || item.match(/<description>(.*?)<\/description>/s)?.[1] || '';
+        if (!title) continue;
+        results.push({
+          date: kstDate(),
+          source: 'korean_finance',
+          title: title.trim().replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>'),
+          description: desc.replace(/<[^>]*>/g, '').trim().slice(0, 300),
+          url: link.trim(),
+          score: 0,
+          comments_summary: null,
+        });
+        count++;
+      }
+      console.log(`  ✅ ${feed.name} ${count}개`);
+      total += count;
+    } catch (e) {
+      console.warn(`  ⚠️ ${feed.name} 실패: ${e.message}`);
+    }
+  }
+  console.log(`  📊 한국 금융 총 ${total}개`);
+}
+
 // ── 메인 ──────────────────────────────────────────────────
 const results = [];
 
-console.log(`\n🤖 crawlee-agent 시작 (${kstDate()} KST)`);
+const COLLECT_MODE = process.env.COLLECT_MODE || '';
 
-await collectProductHunt(results);
-await collectReddit(results);
-await collectHN(results);
-await visitExternalPages(results);
-await collectGitHubTrending(results);
-await collectGoogleTrends(results);
-await collectYouTubeTrending(results);
-await collectHuggingFace(results);
-await collectYahooFinance(results);
+console.log(`\n🤖 crawlee-agent 시작 (${kstDate()} KST) [MODE=${COLLECT_MODE || 'full'}]`);
+
+if (COLLECT_MODE === 'korean') {
+  await collectKoreanFinance(results);
+} else {
+  await collectProductHunt(results);
+  await collectReddit(results);
+  await collectHN(results);
+  await visitExternalPages(results);
+  await collectGitHubTrending(results);
+  await collectGoogleTrends(results);
+  await collectYouTubeTrending(results);
+  await collectHuggingFace(results);
+  await collectYahooFinance(results);
+}
 
 console.log(`\n📊 총 ${results.length}개 수집 완료`);
 
@@ -456,7 +505,11 @@ if (results.length > 0) {
     const ytCount = results.filter(r => r.source === 'youtube_trending').length;
     const hfCount = results.filter(r => r.source === 'huggingface_trending').length;
     const yfCount = results.filter(r => r.source === 'yahoo_finance').length;
-    await tg(`🤖 crawlee-agent 완료 (${kstDate()})\n📦 PH ${phCount}개 · Reddit ${rdCount}개 · HN ${hnCount}개 · GH ${ghCount}개 · GT ${gtCount}개 · YT ${ytCount}개 · HF ${hfCount}개 · YF ${yfCount}개\n\n🧠 TOP3:\n${summary}`);
+    const kfCount = results.filter(r => r.source === 'korean_finance').length;
+    const msg = COLLECT_MODE === 'korean'
+      ? `🇰🇷 crawlee-agent 완료 (${kstDate()})\n📦 한국금융 ${kfCount}개`
+      : `🤖 crawlee-agent 완료 (${kstDate()})\n📦 PH ${phCount}개 · Reddit ${rdCount}개 · HN ${hnCount}개 · GH ${ghCount}개 · GT ${gtCount}개 · YT ${ytCount}개 · HF ${hfCount}개 · YF ${yfCount}개\n\n🧠 TOP3:\n${summary}`;
+    await tg(msg);
   } else {
     await tg(`🤖 crawlee-agent 완료 (${kstDate()})\n📦 ${results.length}개 수집 (Groq 요약 없음)`);
   }
