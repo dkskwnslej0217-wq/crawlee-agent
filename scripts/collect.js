@@ -1,13 +1,11 @@
 // scripts/collect.js — AI 트렌드 딥 수집기
-// Crawlee PlaywrightCrawler → Product Hunt / Reddit / HN 본문+댓글까지 수집
-// → Supabase trend_sources 테이블에 저장
-// → nova-pipeline이 읽어서 사용
 import { PlaywrightCrawler } from 'crawlee';
 import { checkAndCount } from './api-limiter.js';
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
 const GROQ_KEY     = process.env.GROQ_API_KEY;
+const YT_DATA_KEY  = process.env.YOUTUBE_DATA_API_KEY;
 const TG_TOKEN     = process.env.TELEGRAM_BOT_TOKEN;
 const TG_CHAT      = process.env.TELEGRAM_CHAT_ID;
 
@@ -38,7 +36,6 @@ function kstDate() {
   return new Date(Date.now() + 9 * 3600000).toISOString().slice(0, 10);
 }
 
-// ── Supabase 저장 ──────────────────────────────────────────
 async function saveToSupabase(rows) {
   let saved = 0;
   for (const row of rows) {
@@ -54,8 +51,8 @@ async function saveToSupabase(rows) {
     if (!res.ok) {
       const err = await res.text();
       let errCode = null;
-      try { errCode = JSON.parse(err).code; } catch { /* 비JSON 응답 무시 */ }
-      if (errCode === '23505') continue; // 중복 무시
+      try { errCode = JSON.parse(err).code; } catch { }
+      if (errCode === '23505') continue;
       throw new Error(`Supabase 저장 실패: ${err}`);
     }
     saved++;
@@ -63,7 +60,6 @@ async function saveToSupabase(rows) {
   console.log(`  💾 ${saved}개 저장 (${rows.length - saved}개 중복 스킵)`);
 }
 
-// ── Groq로 핵심 요약 ───────────────────────────────────────
 async function summarizeWithGroq(items) {
   if (!GROQ_KEY || items.length === 0) return null;
   if (!(await checkAndCount('groq_8b'))) return null;
@@ -75,7 +71,7 @@ async function summarizeWithGroq(items) {
       model: 'llama-3.1-8b-instant',
       max_tokens: 400,
       messages: [
-        { role: 'system', content: 'You MUST respond ONLY in Korean (한국어). Do NOT use Chinese, Japanese, or any other language. KOREAN ONLY.' },
+        { role: 'system', content: 'You MUST respond ONLY in Korean (한국어). KOREAN ONLY.' },
         { role: 'user', content: `다음 AI 트렌드 중 오늘 영상 콘텐츠로 가장 좋은 것 TOP3를 선정하고 이유를 한 줄씩 한국어로 말해:\n\n${content}` },
       ],
     }),
@@ -84,7 +80,6 @@ async function summarizeWithGroq(items) {
   return data.choices?.[0]?.message?.content || null;
 }
 
-// ── 1. Product Hunt — RSS 수집 (PH가 데이터센터 IP 차단해서 Playwright 불가)
 async function collectProductHunt(results) {
   console.log('\n🚀 Product Hunt 수집 중...');
   try {
@@ -110,19 +105,13 @@ async function collectProductHunt(results) {
   }
 }
 
-// ── HN 외부 링크 방문 → 상세 설명 추출 ──────────────────────
 async function visitExternalPages(results) {
   console.log('\n🔍 HN 외부 링크 방문 중...');
-  // HN 아이템 중 외부 URL 있는 것만 (hacker-news URL 제외)
   const hnItems = results.filter(r =>
-    r.source === 'hackernews' &&
-    r.url &&
-    !r.url.includes('news.ycombinator.com')
+    r.source === 'hackernews' && r.url && !r.url.includes('news.ycombinator.com')
   );
   if (!hnItems.length) { console.log('  ⏭️ 방문할 외부 링크 없음'); return; }
-
   const pageData = {};
-
   const crawler = new PlaywrightCrawler({
     headless: true,
     maxRequestsPerCrawl: hnItems.length,
@@ -133,26 +122,17 @@ async function visitExternalPages(results) {
         'meta[name="description"], meta[property="og:description"]',
         el => el.getAttribute('content') || ''
       ).catch(() => '');
-
-      const fallback = description
-        ? ''
-        : await page.$eval('h1', el => el.innerText?.trim() || '').catch(() => '');
-
+      const fallback = description ? '' : await page.$eval('h1', el => el.innerText?.trim() || '').catch(() => '');
       pageData[request.url] = (description || fallback).slice(0, 400);
     },
   });
-
   try {
     await crawler.run(hnItems.map(r => r.url));
-
     let enriched = 0;
     for (const item of results) {
       if (item.source !== 'hackernews') continue;
       const desc = pageData[item.url];
-      if (desc) {
-        item.description = desc;
-        enriched++;
-      }
+      if (desc) { item.description = desc; enriched++; }
     }
     console.log(`  ✅ ${enriched}개 상세 설명 추출 완료`);
   } catch (e) {
@@ -160,11 +140,9 @@ async function visitExternalPages(results) {
   }
 }
 
-// ── 2. Reddit — RSS로 수집 (JSON API는 GitHub Actions IP 차단)
 async function collectReddit(results) {
   console.log('\n💬 Reddit 수집 중...');
   const subreddits = ['MachineLearning', 'artificial', 'ChatGPT', 'LocalLLaMA', 'singularity'];
-
   for (const sub of subreddits) {
     try {
       const res = await fetch(`https://www.reddit.com/r/${sub}/hot.rss?limit=5`, {
@@ -172,7 +150,6 @@ async function collectReddit(results) {
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const xml = await res.text();
-
       const items = [...xml.matchAll(/<entry>([\s\S]*?)<\/entry>/g)];
       let count = 0;
       for (const [, item] of items.slice(0, 5)) {
@@ -181,15 +158,7 @@ async function collectReddit(results) {
         const content = item.match(/<content[^>]*>([\s\S]*?)<\/content>/)?.[1] || '';
         const desc    = content.replace(/<[^>]+>/g, '').replace(/&[^;]+;/g, '').trim().slice(0, 400);
         if (!title) continue;
-        results.push({
-          date: kstDate(),
-          source: `reddit_${sub.toLowerCase()}`,
-          title: title.trim(),
-          description: desc,
-          url: link,
-          score: 0,
-          comments_summary: null,
-        });
+        results.push({ date: kstDate(), source: `reddit_${sub.toLowerCase()}`, title: title.trim(), description: desc, url: link, score: 0, comments_summary: null });
         count++;
       }
       console.log(`  ✅ r/${sub} ${count}개`);
@@ -199,52 +168,33 @@ async function collectReddit(results) {
   }
 }
 
-// ── 3. HackerNews — TOP10 + 댓글 핵심 수집 ──────────────
 async function collectHN(results) {
   console.log('\n🔥 HackerNews 수집 중...');
   try {
     const res = await fetch('https://hacker-news.firebaseio.com/v0/topstories.json');
     const ids  = await res.json();
-    const top  = ids.slice(0, 10);
-
-    for (const id of top) {
+    for (const id of ids.slice(0, 10)) {
       try {
         const item = await fetch(`https://hacker-news.firebaseio.com/v0/item/${id}.json`).then(r => r.json());
         if (!item?.title) continue;
-
-        // AI 관련만 필터
         const aiKeywords = ['ai', 'llm', 'gpt', 'claude', 'model', 'ml', 'agent', 'openai', 'anthropic', 'gemini'];
         const isAI = aiKeywords.some(k => (item.title + (item.text || '')).toLowerCase().includes(k));
         if (!isAI) continue;
-
-        // 댓글 핵심 수집 (최대 3개)
         let commentsSummary = '';
         if (item.kids?.length) {
-          const commentIds = item.kids.slice(0, 5);
-          const comments = await Promise.all(
-            commentIds.map(kid =>
-              fetch(`https://hacker-news.firebaseio.com/v0/item/${kid}.json`)
-                .then(r => r.json())
-                .catch(() => null)
-            )
-          );
-          commentsSummary = comments
-            .filter(c => c?.text && !c.dead)
-            .slice(0, 3)
-            .map(c => c.text.replace(/<[^>]+>/g, '').slice(0, 150))
-            .join(' | ');
+          const comments = await Promise.all(item.kids.slice(0, 5).map(kid =>
+            fetch(`https://hacker-news.firebaseio.com/v0/item/${kid}.json`).then(r => r.json()).catch(() => null)
+          ));
+          commentsSummary = comments.filter(c => c?.text && !c.dead).slice(0, 3)
+            .map(c => c.text.replace(/<[^>]+>/g, '').slice(0, 150)).join(' | ');
         }
-
         results.push({
-          date: kstDate(),
-          source: 'hackernews',
-          title: item.title,
+          date: kstDate(), source: 'hackernews', title: item.title,
           description: (item.text || item.url || '').replace(/<[^>]+>/g, '').slice(0, 500),
           url: item.url || `https://news.ycombinator.com/item?id=${id}`,
-          score: item.score || 0,
-          comments_summary: commentsSummary.slice(0, 800),
+          score: item.score || 0, comments_summary: commentsSummary.slice(0, 800),
         });
-      } catch { /* 개별 아이템 실패 무시 */ }
+      } catch { }
     }
     console.log(`  ✅ HN AI 관련 ${results.filter(r => r.source === 'hackernews').length}개`);
   } catch (e) {
@@ -252,7 +202,6 @@ async function collectHN(results) {
   }
 }
 
-// ── GitHub Trending 수집 ──────────────────────────────────
 async function collectGitHubTrending(results) {
   try {
     const res = await fetch('https://api.github.com/search/repositories?q=stars:>100+pushed:>2026-01-01+topic:ai&sort=stars&order=desc&per_page=5', {
@@ -261,15 +210,7 @@ async function collectGitHubTrending(results) {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     for (const repo of (data.items || [])) {
-      results.push({
-        date: kstDate(),
-        source: 'github_trending',
-        title: repo.full_name,
-        description: (repo.description || '').slice(0, 500),
-        url: repo.html_url,
-        score: repo.stargazers_count,
-        comments_summary: null,
-      });
+      results.push({ date: kstDate(), source: 'github_trending', title: repo.full_name, description: (repo.description || '').slice(0, 500), url: repo.html_url, score: repo.stargazers_count, comments_summary: null });
     }
     console.log(`  ✅ GitHub Trending ${results.filter(r => r.source === 'github_trending').length}개`);
   } catch (e) {
@@ -277,12 +218,9 @@ async function collectGitHubTrending(results) {
   }
 }
 
-// ── Google Trends 수집 (RSS) ──────────────────────────────
 async function collectGoogleTrends(results) {
   try {
-    const res = await fetch('https://trends.google.com/trending/rss?geo=KR', {
-      headers: { 'User-Agent': 'Mozilla/5.0' },
-    });
+    const res = await fetch('https://trends.google.com/trending/rss?geo=KR', { headers: { 'User-Agent': 'Mozilla/5.0' } });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const xml = await res.text();
     const items = xml.match(/<item>([\s\S]*?)<\/item>/g) || [];
@@ -291,15 +229,7 @@ async function collectGoogleTrends(results) {
       const title = (item.match(/<title>(.*?)<\/title>/) || [])[1] || '';
       const url   = (item.match(/<link>(.*?)<\/link>/)   || [])[1] || '';
       if (!title) continue;
-      results.push({
-        date: kstDate(),
-        source: 'google_trends_kr',
-        title: title.replace(/<!\[CDATA\[|\]\]>/g, '').trim(),
-        description: '',
-        url,
-        score: 0,
-        comments_summary: null,
-      });
+      results.push({ date: kstDate(), source: 'google_trends_kr', title: title.replace(/<!\[CDATA\[|\]\]>/g, '').trim(), description: '', url, score: 0, comments_summary: null });
       count++;
     }
     console.log(`  ✅ Google Trends KR ${count}개`);
@@ -308,13 +238,9 @@ async function collectGoogleTrends(results) {
   }
 }
 
-// ── YouTube 트렌딩 수집 (RSS) ─────────────────────────────
 async function collectYouTubeTrending(results) {
   try {
-    // YouTube 트렌딩 RSS (한국)
-    const res = await fetch('https://www.youtube.com/feeds/videos.xml?q=AI+tool+2026&gl=KR&hl=ko', {
-      headers: { 'User-Agent': 'Mozilla/5.0' },
-    });
+    const res = await fetch('https://www.youtube.com/feeds/videos.xml?q=AI+tool+2026&gl=KR&hl=ko', { headers: { 'User-Agent': 'Mozilla/5.0' } });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const xml = await res.text();
     const entries = xml.match(/<entry>([\s\S]*?)<\/entry>/g) || [];
@@ -323,15 +249,7 @@ async function collectYouTubeTrending(results) {
       const title = (entry.match(/<title>(.*?)<\/title>/) || [])[1] || '';
       const url   = (entry.match(/href="(https:\/\/www\.youtube\.com[^"]+)"/) || [])[1] || '';
       if (!title) continue;
-      results.push({
-        date: kstDate(),
-        source: 'youtube_trending',
-        title: title.replace(/<!\[CDATA\[|\]\]>/g, '').trim(),
-        description: '',
-        url,
-        score: 0,
-        comments_summary: null,
-      });
+      results.push({ date: kstDate(), source: 'youtube_trending', title: title.replace(/<!\[CDATA\[|\]\]>/g, '').trim(), description: '', url, score: 0, comments_summary: null });
       count++;
     }
     console.log(`  ✅ YouTube Trending ${count}개`);
@@ -340,29 +258,80 @@ async function collectYouTubeTrending(results) {
   }
 }
 
-// ── HuggingFace 트렌딩 모델 수집 ─────────────────────────
+// ── YouTube Data API — 인기 AI툴 영상 썸네일 패턴 수집 ───
+async function collectYoutubePatterns() {
+  if (!YT_DATA_KEY) { console.log('\n⏭️ YOUTUBE_DATA_API_KEY 없음 — 스킵'); return; }
+  console.log('\n📺 YouTube 썸네일 패턴 수집 중...');
+  try {
+    const today = kstDate();
+    const checkRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/youtube_patterns?date=eq.${today}&select=id`,
+      { headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` } }
+    );
+    if (checkRes.ok && (await checkRes.json()).length > 0) {
+      console.log('  ⏭️ 오늘 데이터 이미 수집됨');
+      return;
+    }
+    const queries = ['AI tool review 2025', 'best AI productivity tools'];
+    const videoMap = new Map();
+    for (const q of queries) {
+      const res = await fetch(
+        `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(q)}&maxResults=5&type=video&order=viewCount&key=${YT_DATA_KEY}`,
+        { signal: AbortSignal.timeout(15000) }
+      );
+      if (!res.ok) throw new Error(`YouTube 검색 API ${res.status}: ${await res.text()}`);
+      const data = await res.json();
+      for (const item of (data.items || [])) {
+        const id = item.id.videoId;
+        if (!videoMap.has(id)) {
+          videoMap.set(id, {
+            video_id: id,
+            title: item.snippet.title,
+            thumbnail_url: item.snippet.thumbnails.high?.url || item.snippet.thumbnails.medium?.url || '',
+            channel: item.snippet.channelTitle,
+            published_at: item.snippet.publishedAt?.slice(0, 10) || '',
+          });
+        }
+      }
+    }
+    const videos = [...videoMap.values()];
+    if (!videos.length) { console.log('  ⚠️ 수집된 영상 없음'); return; }
+    const ids = videos.map(v => v.video_id).join(',');
+    const statsRes = await fetch(
+      `https://www.googleapis.com/youtube/v3/videos?part=statistics&id=${ids}&key=${YT_DATA_KEY}`,
+      { signal: AbortSignal.timeout(10000) }
+    );
+    if (statsRes.ok) {
+      const statsData = await statsRes.json();
+      for (const item of (statsData.items || [])) {
+        const v = videos.find(v => v.video_id === item.id);
+        if (v) v.view_count = parseInt(item.statistics.viewCount || '0');
+      }
+    }
+    videos.sort((a, b) => (b.view_count || 0) - (a.view_count || 0));
+    const saveRes = await fetch(`${SUPABASE_URL}/rest/v1/youtube_patterns`, {
+      method: 'POST',
+      headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ date: today, total_analyzed: videos.length, analyses: videos, summary: { status: 'raw', gemini_analyzed: false } }),
+    });
+    if (!saveRes.ok) throw new Error(`저장 실패: ${await saveRes.text()}`);
+    console.log(`  ✅ YouTube ${videos.length}개 패턴 저장 완료`);
+  } catch (e) {
+    console.warn(`  ⚠️ YouTube 패턴 수집 실패: ${e.message}`);
+  }
+}
+
 async function collectHuggingFace(results) {
   try {
-    const res = await fetch('https://huggingface.co/api/models?sort=trending&limit=10&direction=-1', {
-      headers: { 'User-Agent': 'crawlee-agent/1.0' },
-    });
+    const res = await fetch('https://huggingface.co/api/models?sort=trending&limit=10&direction=-1', { headers: { 'User-Agent': 'crawlee-agent/1.0' } });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     let count = 0;
     for (const model of data) {
       const title = model.id || '';
-      const desc = (model.cardData?.language ? `언어: ${model.cardData.language.join(',')} | ` : '')
-        + (model.pipeline_tag ? `태스크: ${model.pipeline_tag}` : '');
+      const desc = (model.cardData?.language ? `언어: ${model.cardData.language.join(',')} | ` : '') + (model.pipeline_tag ? `태스크: ${model.pipeline_tag}` : '');
       if (!title) continue;
-      results.push({
-        date: kstDate(),
-        source: 'huggingface_trending',
-        title,
-        description: desc.slice(0, 300),
-        url: `https://huggingface.co/${title}`,
-        score: model.downloads || 0,
-        comments_summary: null,
-      });
+      results.push({ date: kstDate(), source: 'huggingface_trending', title, description: desc.slice(0, 300), url: `https://huggingface.co/${title}`, score: model.downloads || 0, comments_summary: null });
       count++;
     }
     console.log(`  ✅ HuggingFace Trending ${count}개`);
@@ -371,13 +340,10 @@ async function collectHuggingFace(results) {
   }
 }
 
-// ── Yahoo Finance 미국 주식 뉴스 수집 ───────────────────────
 async function collectYahooFinance(results) {
   console.log('\n📈 Yahoo Finance 수집 중...');
   try {
-    const res = await fetch('https://finance.yahoo.com/news/rssindex', {
-      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; crawlee-agent/1.0)' },
-    });
+    const res = await fetch('https://finance.yahoo.com/news/rssindex', { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; crawlee-agent/1.0)' } });
     if (!res.ok) throw new Error(`YF RSS ${res.status}`);
     const xml = await res.text();
     const items = [...xml.matchAll(/<item>([\s\S]*?)<\/item>/g)];
@@ -390,15 +356,7 @@ async function collectYahooFinance(results) {
       const desc = source ? `${source} · ${pubDate.slice(0, 10)}` : pubDate.slice(0, 10);
       const imageUrl = item.match(/<media:content[^>]*url="([^"]+)"/)?.[1] || item.match(/<media:thumbnail[^>]*url="([^"]+)"/)?.[1] || '';
       if (!title) continue;
-      results.push({
-        date: kstDate(),
-        source: 'yahoo_finance',
-        title: title.trim(),
-        description: desc.slice(0, 500),
-        url: link,
-        score: 0,
-        comments_summary: imageUrl || null,
-      });
+      results.push({ date: kstDate(), source: 'yahoo_finance', title: title.trim(), description: desc.slice(0, 500), url: link, score: 0, comments_summary: imageUrl || null });
       count++;
     }
     console.log(`  ✅ Yahoo Finance ${count}개`);
@@ -407,7 +365,6 @@ async function collectYahooFinance(results) {
   }
 }
 
-// ── 한국 주식/금융 뉴스 수집 ─────────────────────────────
 async function collectKoreanFinance(results) {
   console.log('\n🇰🇷 한국 주식 뉴스 수집 중...');
   const feeds = [
@@ -418,9 +375,7 @@ async function collectKoreanFinance(results) {
   let total = 0;
   for (const feed of feeds) {
     try {
-      const res = await fetch(feed.url, {
-        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; crawlee-agent/1.0)' },
-      });
+      const res = await fetch(feed.url, { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; crawlee-agent/1.0)' } });
       if (!res.ok) { console.warn(`  ⚠️ ${feed.name} ${res.status}`); continue; }
       const xml = await res.text();
       const items = [...xml.matchAll(/<item>([\s\S]*?)<\/item>/g)];
@@ -430,15 +385,7 @@ async function collectKoreanFinance(results) {
         const link = item.match(/<link>(.*?)<\/link>/)?.[1] || item.match(/<link\s*\/?>(.*?)<\/link>/)?.[1] || '';
         const desc = item.match(/<description[^>]*><!\[CDATA\[(.*?)\]\]>/s)?.[1] || item.match(/<description>(.*?)<\/description>/s)?.[1] || '';
         if (!title) continue;
-        results.push({
-          date: kstDate(),
-          source: 'korean_finance',
-          title: title.trim().replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>'),
-          description: desc.replace(/<[^>]*>/g, '').trim().slice(0, 300),
-          url: link.trim(),
-          score: 0,
-          comments_summary: null,
-        });
+        results.push({ date: kstDate(), source: 'korean_finance', title: title.trim().replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>'), description: desc.replace(/<[^>]*>/g, '').trim().slice(0, 300), url: link.trim(), score: 0, comments_summary: null });
         count++;
       }
       console.log(`  ✅ ${feed.name} ${count}개`);
@@ -452,9 +399,7 @@ async function collectKoreanFinance(results) {
 
 // ── 메인 ──────────────────────────────────────────────────
 const results = [];
-
 const COLLECT_MODE = process.env.COLLECT_MODE || '';
-
 console.log(`\n🤖 crawlee-agent 시작 (${kstDate()} KST) [MODE=${COLLECT_MODE || 'full'}]`);
 
 if (COLLECT_MODE === 'korean') {
@@ -467,6 +412,7 @@ if (COLLECT_MODE === 'korean') {
   await collectGitHubTrending(results);
   await collectGoogleTrends(results);
   await collectYouTubeTrending(results);
+  await collectYoutubePatterns();
   await collectHuggingFace(results);
   await collectYahooFinance(results);
 }
@@ -476,27 +422,12 @@ console.log(`\n📊 총 ${results.length}개 수집 완료`);
 if (results.length > 0) {
   await saveToSupabase(results);
   console.log('✅ Supabase 저장 완료');
-
-  // 30일 이전 데이터 자동 삭제
   await deleteOldTrendSources();
-
-  // Groq 요약 (오늘 콘텐츠 소재 TOP3)
   const summary = await summarizeWithGroq(results);
   if (summary) {
     console.log('\n🧠 Groq 분석 결과:');
     console.log(summary);
-
-    await saveToSupabase([{
-      date: kstDate(),
-      source: 'groq_summary',
-      title: '오늘의 AI 트렌드 요약',
-      description: summary,
-      url: '',
-      score: 999,
-      comments_summary: null,
-    }]);
-
-    // 텔레그램 완료 알림
+    await saveToSupabase([{ date: kstDate(), source: 'groq_summary', title: '오늘의 AI 트렌드 요약', description: summary, url: '', score: 999, comments_summary: null }]);
     const phCount = results.filter(r => r.source === 'product_hunt').length;
     const rdCount = results.filter(r => r.source.startsWith('reddit')).length;
     const hnCount = results.filter(r => r.source === 'hackernews').length;
